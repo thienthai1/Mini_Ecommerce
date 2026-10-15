@@ -5,6 +5,7 @@ const previewOrigin = process.env.V0_RUNTIME_URL
   : undefined;
 
 const nextConfig: NextConfig = {
+  poweredByHeader: false,
   experimental: {
     serverActions: {
       allowedOrigins: [

@@ -1,5 +1,5 @@
-import { issueSignedToken } from '@vercel/blob';
-import { handleUploadPresigned, type HandleUploadPresignedBody } from '@vercel/blob/client';
+import { issueSignedToken, presignUrl } from '@vercel/blob';
+import type { HandleUploadPresignedBody } from '@vercel/blob/client';
 import { adminId } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { blobCredentials, imageTypes, maxImageSize } from '@/lib/storage';
@@ -11,31 +11,38 @@ export async function POST(request: Request, context: { params: Promise<{ folder
     const { folder } = await context.params;
     if (folder !== 'products' && folder !== 'slips') return new Response('Not found', { status: 404 });
     const body = await request.json() as HandleUploadPresignedBody;
-    const credentials = blobCredentials(folder);
-    const webhookPublicKey = folder === 'products'
-      ? process.env.BLOB_PRODUCTS_WEBHOOK_PUBLIC_KEY
-      : process.env.BLOB_SLIPS_WEBHOOK_PUBLIC_KEY;
-    const result = await handleUploadPresigned({
-      body, request, webhookPublicKey,
-      getSignedToken: async (requestedPathname, clientPayload) => {
-        const extension = requestedPathname.match(/\.(jpg|png|webp)$/)?.[1];
-        if (!extension || !new RegExp(`^${folder}/[a-f0-9-]{36}\\.${extension}$`).test(requestedPathname)) throw new Error('Invalid pathname');
-        if (folder === 'products') {
-          if (!await adminId()) throw new Error('Unauthorized');
-        } else {
-          const code = clientPayload || '';
-          if (!/^[a-f0-9]{32}$/.test(code)) throw new Error('Invalid order');
-          const order = await db().order.findUnique({ where: { code }, select: { status: true } });
-          if (!order || !['AWAITING_SLIP', 'REJECTED'].includes(order.status)) throw new Error('Order cannot accept a slip');
-        }
-        const validUntil = Date.now() + 5 * 60 * 1000;
-        return {
-          token: await issueSignedToken({ ...credentials, pathname: requestedPathname, operations: ['put'], validUntil }),
-          urlOptions: { allowedContentTypes: imageTypes, maximumSizeInBytes: maxImageSize, validUntil },
-        };
-      },
+    if (body.type !== 'blob.generate-presigned-url') throw new Error('Invalid upload event');
+
+    const { pathname: requestedPathname, clientPayload } = body.payload;
+    const extension = requestedPathname.match(/\.(jpg|png|webp)$/)?.[1];
+    if (!extension || !new RegExp(`^${folder}/[a-f0-9-]{36}\\.${extension}$`).test(requestedPathname)) throw new Error('Invalid pathname');
+
+    if (folder === 'products') {
+      if (!await adminId()) throw new Error('Unauthorized');
+    } else {
+      const code = clientPayload || '';
+      if (!/^[a-f0-9]{32}$/.test(code)) throw new Error('Invalid order');
+      const order = await db().order.findUnique({ where: { code }, select: { status: true } });
+      if (!order || !['AWAITING_SLIP', 'REJECTED'].includes(order.status)) throw new Error('Order cannot accept a slip');
+    }
+
+    const validUntil = Date.now() + 5 * 60 * 1000;
+    const signedToken = await issueSignedToken({
+      ...blobCredentials(folder),
+      pathname: requestedPathname,
+      operations: ['put'],
+      validUntil,
     });
-    return Response.json(result);
+    const presignedUrlPayload = await presignUrl(signedToken, {
+      operation: 'put',
+      pathname: requestedPathname,
+      access: folder === 'products' ? 'public' : 'private',
+      allowedContentTypes: imageTypes,
+      maximumSizeInBytes: maxImageSize,
+      validUntil,
+    });
+
+    return Response.json({ type: body.type, presignedUrlPayload });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown upload error';
     let safeMessage = message;
