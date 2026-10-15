@@ -13,6 +13,12 @@ export function blobCredentials(folder: 'products' | 'slips') {
     : process.env.BLOB_SLIPS_STORE_ID;
   if (storeId) return { storeId };
   if (token) return { token };
+
+  // The Vercel Blob integration exposes one development token by default.
+  // Keep product and slip paths isolated until dedicated store credentials are added.
+  const sharedToken = process.env.BLOB_READ_WRITE_TOKEN;
+  if (sharedToken) return { token: sharedToken };
+
   throw new Error(`Blob store for ${folder} is not configured`);
 }
 
